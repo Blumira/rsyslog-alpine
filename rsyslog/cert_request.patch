@@ -1,0 +1,32 @@
+Patch by: <cheath@blumira.com>
+Work around bug in Microsoft clients that fail to complete the handshake
+if they don't have a client certificate.  Now it only sends GNUTLS_CERT_REQUEST
+if rsyslog is set up to validate client certs against a CA cert bundle.
+(GNUTLS_CERT_REQUEST is supposed to mean that a certificate is optional,
+but MS / .NET treats it the same as GNUTLS_CERT_REQUIRE.)
+
+diff --git a/runtime/nsd_gtls.c b/runtime/nsd_gtls.c
+index 2eed4246d..d43bc0fa1 100644
+--- a/runtime/nsd_gtls.c
++++ b/runtime/nsd_gtls.c
+@@ -712,8 +712,8 @@ gtlsGlblInit(void)
+ 	/* sets the trusted cas file */
+ 	cafile = glbl.GetDfltNetstrmDrvrCAF();
+ 	if(cafile == NULL) {
+-		LogMsg(0, RS_RET_CA_CERT_MISSING, LOG_WARNING,
+-			"Warning: CA certificate is not set");
++		LogMsg(0, RS_RET_CA_CERT_MISSING, LOG_NOTICE,
++			"Note: CA certificate is not set");
+ 		bHaveCA = 0;
+ 	} else {
+ 		bHaveCA	= 1;
+@@ -797,7 +797,8 @@ gtlsInitSession(nsd_gtls_t *pThis)
+ 	}
+ 
+ 	/* request client certificate if any.  */
+-	gnutls_certificate_server_set_request( pThis->sess, GNUTLS_CERT_REQUEST);
++	if (bHaveCA)
++		gnutls_certificate_server_set_request( pThis->sess, GNUTLS_CERT_REQUEST);
+ 
+ 
+ finalize_it:

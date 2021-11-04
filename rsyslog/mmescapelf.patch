@@ -1,0 +1,309 @@
+Patch by: <cheath@blumira.com>
+Add plugin that escapes line-feed characters.
+
+diff --git a/Makefile.am b/Makefile.am
+index 0e1c0195c..f6bee9df0 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -337,6 +337,11 @@ if ENABLE_PMDB2DIAG
+ SUBDIRS += contrib/pmdb2diag
+ endif
+ 
++# mmescapelf
++if ENABLE_MMESCAPELF
++SUBDIRS += contrib/mmescapelf
++endif
++
+ # tests are added as last element, because tests may need different
+ # modules that need to be generated first
+ SUBDIRS += tests
+diff --git a/configure.ac b/configure.ac
+index 006371dd2..8fd479128 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1715,6 +1715,18 @@ AC_ARG_ENABLE(pmdb2diag,
+ )
+ AM_CONDITIONAL(ENABLE_PMDB2DIAG, test x$enable_pmdb2diag = xyes)
+ 
++# settings for the mmescapelf module
++AC_ARG_ENABLE(mmescapelf,
++        [AS_HELP_STRING([--enable-mmescapelf],[escapelf module enabled @<:@default=no@:>@])],
++        [case "${enableval}" in
++         yes) enable_mmescapelf="yes" ;;
++          no) enable_mmescapelf="no" ;;
++           *) AC_MSG_ERROR(bad value ${enableval} for --enable-mmescapelf) ;;
++         esac],
++        [enable_mmescapelf=no]
++)
++AM_CONDITIONAL(ENABLE_MMESCAPELF, test x$enable_mmescapelf = xyes)
++
+ # settings for the file input module
+ AC_ARG_ENABLE(imfile,
+         [AS_HELP_STRING([--enable-imfile],[file input module enabled @<:@default=no@:>@])],
+@@ -2633,6 +2645,7 @@ AC_CONFIG_FILES([Makefile \
+ 		contrib/mmtaghostname/Makefile \
+ 		contrib/imdocker/Makefile \
+ 		contrib/pmdb2diag/Makefile \
++		contrib/mmescapelf/Makefile \
+ 		tests/set-envvars \
+ 		tests/Makefile])
+ AC_OUTPUT
+@@ -2726,6 +2739,7 @@ echo "    mmfields enabled:                         $enable_mmfields"
+ echo "    mmrm1stspace module enabled:              $enable_mmrm1stspace"
+ echo "    mmkubernetes enabled:                     $enable_mmkubernetes"
+ echo "    mmtaghostname enabled:                    $enable_mmtaghostname"
++echo "    mmescapelf enabled:                       $enable_mmescapelf"
+ echo
+ echo "---{ database support }---"
+ echo "    MySql support enabled:                    $enable_mysql"
+diff --git a/contrib/mmescapelf/Makefile.am b/contrib/mmescapelf/Makefile.am
+new file mode 100644
+index 000000000..d2d481e82
+--- /dev/null
++++ b/contrib/mmescapelf/Makefile.am
+@@ -0,0 +1,8 @@
++pkglib_LTLIBRARIES = mmescapelf.la
++
++mmescapelf_la_SOURCES = mmescapelf.c
++mmescapelf_la_CPPFLAGS =  $(RSRT_CFLAGS) $(PTHREADS_CFLAGS)
++mmescapelf_la_LDFLAGS = -module -avoid-version
++mmescapelf_la_LIBADD =
++
++EXTRA_DIST = 
+diff --git a/contrib/mmescapelf/mmescapelf.c b/contrib/mmescapelf/mmescapelf.c
+new file mode 100644
+index 000000000..04809c1cc
+--- /dev/null
++++ b/contrib/mmescapelf/mmescapelf.c
+@@ -0,0 +1,231 @@
++/* mmescapelf.c
++ * Replaces all LF and CR-LF byte sequences with #012 (the octal escape code
++ * for LF). Removes any terminating CR or LF or CR-LF byte sequences.
++ *
++ * File is based on code that is subject to the following license:
++ *
++ * Copyright 2016 Adiscon GmbH.
++ *
++ * This file is part of rsyslog.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *       http://www.apache.org/licenses/LICENSE-2.0
++ *       -or-
++ *       see COPYING.ASL20 in the source distribution
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "config.h"
++#include "rsyslog.h"
++#include <stdio.h>
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++#include <assert.h>
++#include <signal.h>
++#include <errno.h>
++#include <unistd.h>
++#include <stdint.h>
++#include "conf.h"
++#include "syslogd-types.h"
++#include "srUtils.h"
++#include "template.h"
++#include "module-template.h"
++#include "errmsg.h"
++
++MODULE_TYPE_OUTPUT
++MODULE_TYPE_NOKEEP
++MODULE_CNFNAME("mmescapelf")
++
++
++DEF_OMOD_STATIC_DATA
++
++/* config variables */
++
++/* define operation modes we have */
++typedef struct _instanceData {
++	int dummy;
++} instanceData;
++
++typedef struct wrkrInstanceData {
++	instanceData *pData;
++} wrkrInstanceData_t;
++
++struct modConfData_s {
++	rsconf_t *pConf;	/* our overall config object */
++};
++static modConfData_t *loadModConf = NULL;/* modConf ptr to use for the current load process */
++static modConfData_t *runModConf = NULL;/* modConf ptr to use for the current exec process */
++
++
++BEGINbeginCnfLoad
++CODESTARTbeginCnfLoad
++	loadModConf = pModConf;
++	pModConf->pConf = pConf;
++ENDbeginCnfLoad
++
++BEGINendCnfLoad
++CODESTARTendCnfLoad
++ENDendCnfLoad
++
++BEGINcheckCnf
++CODESTARTcheckCnf
++ENDcheckCnf
++
++BEGINactivateCnf
++CODESTARTactivateCnf
++	runModConf = pModConf;
++ENDactivateCnf
++
++
++BEGINfreeCnf
++CODESTARTfreeCnf
++ENDfreeCnf
++
++
++BEGINcreateWrkrInstance
++CODESTARTcreateWrkrInstance
++ENDcreateWrkrInstance
++
++
++BEGINisCompatibleWithFeature
++CODESTARTisCompatibleWithFeature
++ENDisCompatibleWithFeature
++
++
++BEGINcreateInstance
++CODESTARTcreateInstance
++ENDcreateInstance
++
++
++BEGINfreeInstance
++CODESTARTfreeInstance
++ENDfreeInstance
++
++BEGINnewActInst
++CODESTARTnewActInst
++	CODE_STD_STRING_REQUESTnewActInst(1)
++	CHKiRet(OMSRsetEntry(*ppOMSR, 0, NULL, OMSR_TPL_AS_MSG));
++	CHKiRet(createInstance(&pData));
++CODE_STD_FINALIZERnewActInst
++ENDnewActInst
++
++
++BEGINfreeWrkrInstance
++CODESTARTfreeWrkrInstance
++ENDfreeWrkrInstance
++
++
++BEGINdbgPrintInstInfo
++CODESTARTdbgPrintInstInfo
++ENDdbgPrintInstInfo
++
++
++BEGINtryResume
++CODESTARTtryResume
++ENDtryResume
++
++
++BEGINdoAction_NoStrings
++	smsg_t **ppMsg = (smsg_t **) pMsgData;
++	smsg_t *pMsg = ppMsg[0];
++	uchar *msg;
++	char *newRaw = NULL;
++	int lenMsg;
++	int offset;
++	int replace;
++CODESTARTdoAction
++	getRawMsg(pMsg, &msg, &lenMsg);
++	offset = 0;
++	while (offset < lenMsg) {
++		offset += strcspn((char*)(msg + offset), "\r\n");
++		if (offset >= lenMsg)
++			break;
++		if (*(msg + offset) == '\r') {
++			if (offset + 1 >= lenMsg) {
++				/* '\r' at end of line */
++				*(msg + offset) = '\0';
++				lenMsg--;
++				break;
++			} else if (*(msg + offset + 1) == '\n') {
++				if (offset + 2 >= lenMsg) {
++					/* "\r\n" at end of line */
++					*(msg + offset) = '\0';
++					lenMsg -= 2;
++					break;
++				} else {
++					/* replace the 2 chars with "#012" */
++					replace = 2;
++				}
++			} else {
++				/* skip over the '\r' and don't replace */
++				offset++;
++				continue;
++			}
++		} else if (*(msg + offset) == '\n') {
++			if (offset + 1 >= lenMsg) {
++				/* '\n' at end of line */
++				*(msg + offset) = '\0';
++				lenMsg--;
++				break;
++			} else {
++				/* replace the 1 char with "#012" */
++				replace = 1;
++			}
++		} else {
++			/* skip over the '\0' */
++			offset++;
++			continue;
++		}
++		if (!newRaw) {
++			/* multiply by 4 to handle worst case: replace 1 char
++			 * with 4 chars */
++			newRaw = malloc(lenMsg * 4 + 1);
++			memcpy(newRaw, msg, lenMsg + 1);
++			msg = (uchar*)newRaw;
++		}
++		memmove(msg + offset + 4, msg + offset + replace, lenMsg - offset - replace + 1);
++		lenMsg += 4 - replace;
++		memcpy(msg + offset, "#012", 4);
++		offset += 4;
++	}
++	if (newRaw) {
++		MsgSetRawMsg(pMsg, newRaw, lenMsg);
++		free(newRaw);
++	} else {
++		pMsg->iLenMSG += lenMsg - pMsg->iLenRawMsg;
++		pMsg->iLenRawMsg = lenMsg;
++	}
++ENDdoAction
++
++
++BEGINmodExit
++CODESTARTmodExit
++ENDmodExit
++
++
++NO_LEGACY_CONF_parseSelectorAct
++
++BEGINqueryEtryPt
++CODESTARTqueryEtryPt
++CODEqueryEtryPt_STD_OMOD_QUERIES
++CODEqueryEtryPt_STD_OMOD8_QUERIES
++CODEqueryEtryPt_STD_CONF2_QUERIES
++CODEqueryEtryPt_STD_CONF2_OMOD_QUERIES
++ENDqueryEtryPt
++
++
++
++BEGINmodInit()
++CODESTARTmodInit
++	*ipIFVersProvided = CURR_MOD_IF_VERSION; /* we only support the current interface specification */
++CODEmodInit_QueryRegCFSLineHdlr
++	DBGPRINTF("mmescapelf: module compiled with rsyslog version %s.\n", VERSION);
++ENDmodInit
